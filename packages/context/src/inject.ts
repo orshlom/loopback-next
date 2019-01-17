@@ -50,11 +50,6 @@ export interface InjectionMetadata {
    */
   optional?: boolean;
   /**
-   * Control if the resolution only looks up properties from
-   * the local configuration of the target binding itself. Default to `false`.
-   */
-  localConfigOnly?: boolean;
-  /**
    * Other attributes
    */
   [attribute: string]: BoundValue;
@@ -318,9 +313,7 @@ export namespace inject {
    *
    * @param configPath Optional property path of the config. If is `''` or not
    * present, the `config` object will be returned.
-   * @param metadata Optional metadata to help the injection:
-   * - localConfigOnly: only look up from the configuration local to the current
-   * binding. Default to false.
+   * @param metadata Optional metadata to help the injection
    */
   export const config = function injectConfig(
     configPath?: string,
@@ -377,7 +370,6 @@ function resolveFromConfig(
   return ctx.getConfigAsValueOrPromise(binding.key, meta.configPath, {
     session,
     optional: meta.optional,
-    localConfigOnly: meta.localConfigOnly,
     environment: env,
   });
 }
