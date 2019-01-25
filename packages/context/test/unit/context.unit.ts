@@ -5,13 +5,17 @@
 
 import {expect} from '@loopback/testlab';
 import {
-  Context,
   Binding,
+  BindingKey,
   BindingScope,
   BindingType,
+  Context,
+  ContextEventListener,
   isPromiseLike,
-  BindingKey,
 } from '../..';
+
+import {promisify} from 'util';
+const nextTick = promisify(process.nextTick);
 
 /**
  * Create a subclass of context so that we can access parents and registry
@@ -679,6 +683,109 @@ describe('Context', () => {
         },
       });
     });
+  });
+
+  describe('listener subscription', () => {
+    let nonMatchingListener: ContextEventListener;
+
+    beforeEach(givenNonMatchingListener);
+
+    it('subscribes listeners', () => {
+      ctx.subscribe(nonMatchingListener);
+      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
+    });
+
+    it('unsubscribes listeners', () => {
+      ctx.subscribe(nonMatchingListener);
+      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
+      ctx.unsubscribe(nonMatchingListener);
+      expect(ctx.isSubscribed(nonMatchingListener)).to.false();
+    });
+
+    it('allows subscription.unsubscribe()', () => {
+      const subscription = ctx.subscribe(nonMatchingListener);
+      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
+      subscription.unsubscribe();
+      expect(ctx.isSubscribed(nonMatchingListener)).to.false();
+      expect(subscription.closed).to.be.true();
+    });
+
+    it('registers listeners on context chain', () => {
+      const childCtx = new Context(ctx, 'child');
+      childCtx.subscribe(nonMatchingListener);
+      expect(childCtx.isSubscribed(nonMatchingListener)).to.true();
+      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
+    });
+
+    it('un-registers listeners on context chain', () => {
+      const childCtx = new Context(ctx, 'child');
+      childCtx.subscribe(nonMatchingListener);
+      expect(childCtx.isSubscribed(nonMatchingListener)).to.true();
+      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
+      childCtx.unsubscribe(nonMatchingListener);
+      expect(childCtx.isSubscribed(nonMatchingListener)).to.false();
+      expect(ctx.isSubscribed(nonMatchingListener)).to.false();
+    });
+
+    function givenNonMatchingListener() {
+      nonMatchingListener = {
+        filter: binding => false,
+        listen: (event, binding) => {},
+      };
+    }
+  });
+
+  describe('event notification', () => {
+    let matchingListener: ContextEventListener;
+    let nonMatchingListener: ContextEventListener;
+    const events: string[] = [];
+    let nonMatchingListenerCalled = false;
+
+    beforeEach(givenListeners);
+
+    it('emits bind event to matching listeners', async () => {
+      ctx.bind('foo').to('foo');
+      await nextTick();
+      expect(events).to.eql(['foo:bind']);
+      expect(nonMatchingListenerCalled).to.be.false();
+    });
+
+    it('emits unbind event to matching listeners', async () => {
+      ctx.bind('foo').to('foo');
+      await nextTick();
+      ctx.unbind('foo');
+      await nextTick();
+      expect(events).to.eql(['foo:bind', 'foo:unbind']);
+      expect(nonMatchingListenerCalled).to.be.false();
+    });
+
+    it('does not trigger listeners if affected binding is the same', async () => {
+      const binding = ctx.bind('foo').to('foo');
+      await nextTick();
+      expect(events).to.eql(['foo:bind']);
+      ctx.add(binding);
+      await nextTick();
+      expect(events).to.eql(['foo:bind']);
+    });
+
+    function givenListeners() {
+      nonMatchingListenerCalled = false;
+      events.splice(0, events.length);
+      nonMatchingListener = {
+        filter: binding => false,
+        listen: (event, binding) => {
+          nonMatchingListenerCalled = true;
+        },
+      };
+      matchingListener = {
+        filter: binding => true,
+        listen: (event, binding) => {
+          events.push(`${binding.key}:${event}`);
+        },
+      };
+      ctx.subscribe(nonMatchingListener);
+      ctx.subscribe(matchingListener);
+    }
   });
 
   function createContext() {

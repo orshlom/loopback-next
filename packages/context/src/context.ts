@@ -7,10 +7,15 @@ import * as debugModule from 'debug';
 import {v1 as uuidv1} from 'uuid';
 import {ValueOrPromise} from '.';
 import {Binding, BindingTag} from './binding';
+import {BindingFilter, filterByKey, filterByTag} from './binding-filter';
 import {BindingAddress, BindingKey} from './binding-key';
+import {
+  ContextEventListener,
+  ContextEventType,
+  Subscription,
+} from './context-listener';
 import {ResolutionOptions, ResolutionSession} from './resolution-session';
 import {BoundValue, getDeepProperty, isPromiseLike} from './value-promise';
-import {BindingFilter, filterByKey, filterByTag} from './binding-filter';
 
 const debug = debugModule('loopback:context');
 
@@ -34,8 +39,29 @@ export class Context {
   protected _parent?: Context;
 
   /**
-   * Create a new context
+   * A list of registered context listeners
+   */
+  protected readonly listeners: Set<ContextEventListener> = new Set();
+
+  /**
+   * Create a new context. For example,
+   * ```ts
+   * // Create a new root context, let the framework to create a unique name
+   * const rootCtx = new Context();
+   *
+   * // Create a new child context inheriting bindings from `rootCtx`
+   * const childCtx = new Context(rootCtx);
+   *
+   * // Create another root context called "application"
+   * const appCtx = new Context('application');
+   *
+   * // Create a new child context called "request" and inheriting bindings
+   * // from `appCtx`
+   * const reqCtx = new Context(appCtx, 'request');
+   * ```
    * @param _parent The optional parent context
+   * @param name Name of the context, if not provided, a `uuid` will be
+   * generated as the name
    */
   constructor(_parent?: Context | string, name?: string) {
     if (typeof _parent === 'string') {
@@ -72,14 +98,21 @@ export class Context {
       debug('Adding binding: %s', key);
     }
 
+    let existingBinding: Binding | undefined;
     const keyExists = this.registry.has(key);
     if (keyExists) {
-      const existingBinding = this.registry.get(key);
+      existingBinding = this.registry.get(key);
       const bindingIsLocked = existingBinding && existingBinding.isLocked;
       if (bindingIsLocked)
         throw new Error(`Cannot rebind key "${key}" to a locked binding`);
     }
     this.registry.set(key, binding);
+    if (existingBinding !== binding) {
+      if (existingBinding != null) {
+        this.notifyListeners('unbind', existingBinding);
+      }
+      this.notifyListeners('bind', binding);
+    }
     return this;
   }
 
@@ -96,10 +129,75 @@ export class Context {
   unbind(key: BindingAddress): boolean {
     key = BindingKey.validate(key);
     const binding = this.registry.get(key);
+    // If not found, return `false`
     if (binding == null) return false;
     if (binding && binding.isLocked)
       throw new Error(`Cannot unbind key "${key}" of a locked binding`);
-    return this.registry.delete(key);
+    this.registry.delete(key);
+    this.notifyListeners('unbind', binding);
+    return true;
+  }
+
+  /**
+   * Add the context listener as an event listener to the context chain,
+   * including its ancestors
+   * @param listener Context listener
+   */
+  subscribe(listener: ContextEventListener): Subscription {
+    let ctx: Context | undefined = this;
+    while (ctx != null) {
+      ctx.listeners.add(listener);
+      ctx = ctx._parent;
+    }
+    return new ContextSubscription(this, listener);
+  }
+
+  /**
+   * Remove the context listener  from the context chain
+   * @param listener Context listener
+   */
+  unsubscribe(listener: ContextEventListener) {
+    let ctx: Context | undefined = this;
+    while (ctx != null) {
+      ctx.listeners.delete(listener);
+      ctx = ctx._parent;
+    }
+  }
+
+  /**
+   * Check if a listener is subscribed to this context
+   * @param listener Context listener
+   */
+  isSubscribed(listener: ContextEventListener) {
+    return this.listeners.has(listener);
+  }
+
+  /**
+   * Publish an event to the registered listeners. Please note the
+   * notification happens using `process.nextTick` so that we allow fluent APIs
+   * such as `ctx.bind('key').to(...).tag(...);` and give listeners the fully
+   * populated binding
+   *
+   * @param event Event names: `bind` or `unbind`
+   * @param binding Binding bound or unbound
+   */
+  protected notifyListeners(
+    event: ContextEventType,
+    binding: Readonly<Binding<unknown>>,
+  ) {
+    // Notify listeners in the next tick
+    process.nextTick(async () => {
+      for (const listener of this.listeners) {
+        if (!listener.filter || listener.filter(binding)) {
+          try {
+            await listener.listen(event, binding);
+          } catch (err) {
+            debug('Error thrown by a listener is ignored', err, event, binding);
+            // Ignore the error
+          }
+        }
+      }
+    });
   }
 
   /**
@@ -150,6 +248,19 @@ export class Context {
    * - return `true` to include the binding in the results
    * - return `false` to exclude it.
    */
+  find<ValueType = BoundValue>(
+    pattern?: string | RegExp,
+  ): Readonly<Binding<ValueType>>[];
+
+  /**
+   * Find bindings using a filter function
+   * @param filter A function to test on the binding. It returns `true` to
+   * include the binding or `false` to exclude the binding.
+   */
+  find<ValueType = BoundValue>(
+    filter: BindingFilter,
+  ): Readonly<Binding<ValueType>>[];
+
   find<ValueType = BoundValue>(
     pattern?: string | RegExp | BindingFilter,
   ): Readonly<Binding<ValueType>>[] {
@@ -449,5 +560,26 @@ export class Context {
       json[k] = v.toJSON();
     }
     return json;
+  }
+}
+
+/**
+ * An implementation of `Subscription` interface for context events
+ */
+class ContextSubscription implements Subscription {
+  constructor(
+    protected context: Context,
+    protected listener: ContextEventListener,
+  ) {}
+
+  private _closed = false;
+
+  unsubscribe() {
+    this.context.unsubscribe(this.listener);
+    this._closed = true;
+  }
+
+  get closed() {
+    return this._closed;
   }
 }
