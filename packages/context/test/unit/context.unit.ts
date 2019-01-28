@@ -15,7 +15,7 @@ import {
 } from '../..';
 
 import {promisify} from 'util';
-const nextTick = promisify(process.nextTick);
+const setImmediatePromise = promisify(setImmediate);
 
 /**
  * Create a subclass of context so that we can access parents and registry
@@ -28,6 +28,24 @@ class TestContext extends Context {
   get bindingMap() {
     const map = new Map(this.registry);
     return map;
+  }
+  /**
+   * Wait until the context event queue is empty
+   */
+  waitUntilEventsProcessed() {
+    return new Promise((resolve, reject) => {
+      if (this.eventQueue.length === 0) {
+        resolve();
+        return;
+      }
+      this.eventQueue.on('end', err => {
+        if (err) reject(err);
+        else resolve();
+      });
+      this.eventQueue.on('error', err => {
+        reject(err);
+      });
+    });
   }
 }
 
@@ -65,7 +83,7 @@ describe('Context constructor', () => {
 });
 
 describe('Context', () => {
-  let ctx: Context;
+  let ctx: TestContext;
   beforeEach('given a context', createContext);
 
   describe('bind', () => {
@@ -736,59 +754,93 @@ describe('Context', () => {
   });
 
   describe('event notification', () => {
-    let matchingListener: ContextEventListener;
-    let nonMatchingListener: ContextEventListener;
     const events: string[] = [];
     let nonMatchingListenerCalled = false;
 
     beforeEach(givenListeners);
 
     it('emits bind event to matching listeners', async () => {
-      ctx.bind('foo').to('foo');
-      await nextTick();
-      expect(events).to.eql(['foo:bind']);
+      ctx.bind('foo').to('foo-value');
+      await ctx.waitUntilEventsProcessed();
+      expect(events).to.eql(['1:foo:foo-value:bind', '2:foo:foo-value:bind']);
       expect(nonMatchingListenerCalled).to.be.false();
     });
 
     it('emits unbind event to matching listeners', async () => {
-      ctx.bind('foo').to('foo');
-      await nextTick();
+      ctx.bind('foo').to('foo-value');
+      await ctx.waitUntilEventsProcessed();
       ctx.unbind('foo');
-      await nextTick();
-      expect(events).to.eql(['foo:bind', 'foo:unbind']);
+      await ctx.waitUntilEventsProcessed();
+      expect(events).to.eql([
+        '1:foo:foo-value:bind',
+        '2:foo:foo-value:bind',
+        '1:foo:foo-value:unbind',
+        '2:foo:foo-value:unbind',
+      ]);
       expect(nonMatchingListenerCalled).to.be.false();
     });
 
     it('does not trigger listeners if affected binding is the same', async () => {
-      const binding = ctx.bind('foo').to('foo');
-      await nextTick();
-      expect(events).to.eql(['foo:bind']);
+      const binding = ctx.bind('foo').to('foo-value');
+      await ctx.waitUntilEventsProcessed();
+      expect(events).to.eql(['1:foo:foo-value:bind', '2:foo:foo-value:bind']);
       ctx.add(binding);
-      await nextTick();
-      expect(events).to.eql(['foo:bind']);
+      await ctx.waitUntilEventsProcessed();
+      expect(events).to.eql(['1:foo:foo-value:bind', '2:foo:foo-value:bind']);
+    });
+
+    it('reports error if a listener fails', () => {
+      ctx.bind('bar').to('bar-value');
+      return expect(ctx.waitUntilEventsProcessed()).to.be.rejectedWith(
+        'something wrong',
+      );
     });
 
     function givenListeners() {
       nonMatchingListenerCalled = false;
       events.splice(0, events.length);
-      nonMatchingListener = {
+      // A listener does not match the criteria
+      const nonMatchingListener: ContextEventListener = {
         filter: binding => false,
         listen: (event, binding) => {
           nonMatchingListenerCalled = true;
         },
       };
-      matchingListener = {
+      // A sync listener matches the criteria
+      const matchingListener: ContextEventListener = {
         filter: binding => true,
         listen: (event, binding) => {
-          events.push(`${binding.key}:${event}`);
+          // Make sure the binding is configured with value
+          // when the listener is notified
+          const val = binding.getValue(ctx);
+          events.push(`1:${binding.key}:${val}:${event}`);
+        },
+      };
+      // An async listener matches the criteria
+      const matchingAsyncListener: ContextEventListener = {
+        filter: binding => true,
+        listen: async (event, binding) => {
+          await setImmediatePromise();
+          const val = binding.getValue(ctx);
+          events.push(`2:${binding.key}:${val}:${event}`);
+        },
+      };
+      // An async listener matches the criteria that throws an error
+      const matchingAsyncListenerWithError: ContextEventListener = {
+        filter: binding => binding.key === 'bar',
+        listen: async (event, binding) => {
+          await setImmediatePromise();
+          throw new Error('something wrong');
         },
       };
       ctx.subscribe(nonMatchingListener);
       ctx.subscribe(matchingListener);
+      ctx.subscribe(matchingAsyncListener);
+      ctx.subscribe(matchingAsyncListenerWithError);
     }
   });
 
   function createContext() {
-    ctx = new Context();
+    ctx = new TestContext();
   }
 });
