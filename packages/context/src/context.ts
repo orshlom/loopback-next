@@ -4,6 +4,7 @@
 // License text available at https://opensource.org/licenses/MIT
 
 import * as debugModule from 'debug';
+import Queue from 'queue';
 import {v1 as uuidv1} from 'uuid';
 import {ValueOrPromise} from '.';
 import {Binding, BindingTag} from './binding';
@@ -42,6 +43,11 @@ export class Context {
    * A list of registered context listeners
    */
   protected readonly listeners: Set<ContextEventListener> = new Set();
+
+  /**
+   * Queue for context event notifications
+   */
+  protected readonly eventQueue = new Queue({concurrency: 1, autostart: true});
 
   /**
    * Create a new context. For example,
@@ -174,30 +180,44 @@ export class Context {
 
   /**
    * Publish an event to the registered listeners. Please note the
-   * notification happens using `process.nextTick` so that we allow fluent APIs
-   * such as `ctx.bind('key').to(...).tag(...);` and give listeners the fully
-   * populated binding
+   * notification is queued and performed asynchronously so that we allow fluent
+   * APIs such as `ctx.bind('key').to(...).tag(...);` and give listeners the
+   * fully populated binding.
    *
-   * @param event Event names: `bind` or `unbind`
+   * @param eventType Event names: `bind` or `unbind`
    * @param binding Binding bound or unbound
    */
   protected notifyListeners(
-    event: ContextEventType,
+    eventType: ContextEventType,
     binding: Readonly<Binding<unknown>>,
   ) {
-    // Notify listeners in the next tick
-    process.nextTick(async () => {
-      for (const listener of this.listeners) {
-        if (!listener.filter || listener.filter(binding)) {
-          try {
-            await listener.listen(event, binding);
-          } catch (err) {
-            debug('Error thrown by a listener is ignored', err, event, binding);
-            // Ignore the error
+    if (this.listeners.size === 0) return;
+    // Schedule the notification task into the event queue
+    const task = () => {
+      return new Promise((resolve, reject) => {
+        // Run notifications in nextTick so that the binding is fully populated
+        process.nextTick(async () => {
+          for (const listener of this.listeners) {
+            if (!listener.filter || listener.filter(binding)) {
+              try {
+                await listener.listen(eventType, binding);
+              } catch (err) {
+                debug(
+                  'Error thrown by a listener is ignored',
+                  err,
+                  eventType,
+                  binding,
+                );
+                reject(err);
+                return;
+              }
+            }
           }
-        }
-      }
-    });
+          resolve();
+        });
+      });
+    };
+    this.eventQueue.push(task);
   }
 
   /**
@@ -235,7 +255,7 @@ export class Context {
   }
 
   /**
-   * Find bindings using the key pattern
+   * Find bindings using a key pattern or filter function
    * @param pattern A filter function, a regexp or a wildcard pattern with
    * optional `*` and `?`. Find returns such bindings where the key matches
    * the provided pattern.
@@ -248,19 +268,6 @@ export class Context {
    * - return `true` to include the binding in the results
    * - return `false` to exclude it.
    */
-  find<ValueType = BoundValue>(
-    pattern?: string | RegExp,
-  ): Readonly<Binding<ValueType>>[];
-
-  /**
-   * Find bindings using a filter function
-   * @param filter A function to test on the binding. It returns `true` to
-   * include the binding or `false` to exclude the binding.
-   */
-  find<ValueType = BoundValue>(
-    filter: BindingFilter,
-  ): Readonly<Binding<ValueType>>[];
-
   find<ValueType = BoundValue>(
     pattern?: string | RegExp | BindingFilter,
   ): Readonly<Binding<ValueType>>[] {
