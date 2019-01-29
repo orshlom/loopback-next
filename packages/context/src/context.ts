@@ -4,6 +4,7 @@
 // License text available at https://opensource.org/licenses/MIT
 
 import * as debugModule from 'debug';
+import {EventEmitter} from 'events';
 import Queue from 'queue';
 import {v1 as uuidv1} from 'uuid';
 import {ValueOrPromise} from '.';
@@ -23,7 +24,7 @@ const debug = debugModule('loopback:context');
 /**
  * Context provides an implementation of Inversion of Control (IoC) container
  */
-export class Context {
+export class Context extends EventEmitter {
   /**
    * Name of the context
    */
@@ -42,7 +43,7 @@ export class Context {
   /**
    * A list of registered context listeners
    */
-  protected readonly listeners: Set<ContextEventListener> = new Set();
+  protected readonly observers: Set<ContextEventListener> = new Set();
 
   /**
    * Queue for context event notifications
@@ -70,12 +71,36 @@ export class Context {
    * generated as the name
    */
   constructor(_parent?: Context | string, name?: string) {
+    super();
     if (typeof _parent === 'string') {
       name = _parent;
       _parent = undefined;
     }
     this._parent = _parent;
     this.name = name || uuidv1();
+
+    this.setupEventHandlers();
+  }
+
+  /**
+   * Set up an internal listener to notify registered observers asynchronously
+   * upon `bind` and `unbind` events
+   */
+  private setupEventHandlers() {
+    for (const event of ['bind', 'unbind']) {
+      this.on(event, (binding: Readonly<Binding<unknown>>) => {
+        this.notifyListeners(event, binding);
+      });
+    }
+    this.eventQueue.on('error', err => {
+      this.emit('error', err);
+    });
+    this.eventQueue.on('end', err => {
+      if (err) this.emit('error', err);
+      else {
+        this.emit('observersNotified');
+      }
+    });
   }
 
   /**
@@ -115,9 +140,9 @@ export class Context {
     this.registry.set(key, binding);
     if (existingBinding !== binding) {
       if (existingBinding != null) {
-        this.notifyListeners('unbind', existingBinding);
+        this.emit('unbind', existingBinding);
       }
-      this.notifyListeners('bind', binding);
+      this.emit('bind', binding);
     }
     return this;
   }
@@ -140,7 +165,7 @@ export class Context {
     if (binding && binding.isLocked)
       throw new Error(`Cannot unbind key "${key}" of a locked binding`);
     this.registry.delete(key);
-    this.notifyListeners('unbind', binding);
+    this.emit('unbind', binding);
     return true;
   }
 
@@ -151,7 +176,7 @@ export class Context {
   subscribe(listener: ContextEventListener): Subscription {
     let ctx: Context | undefined = this;
     while (ctx != null) {
-      ctx.listeners.add(listener);
+      ctx.observers.add(listener);
       ctx = ctx._parent;
     }
     return new ContextSubscription(this, listener);
@@ -164,7 +189,7 @@ export class Context {
   unsubscribe(listener: ContextEventListener) {
     let ctx: Context | undefined = this;
     while (ctx != null) {
-      ctx.listeners.delete(listener);
+      ctx.observers.delete(listener);
       ctx = ctx._parent;
     }
   }
@@ -174,7 +199,7 @@ export class Context {
    * @param listener Context listener
    */
   isSubscribed(listener: ContextEventListener) {
-    return this.listeners.has(listener);
+    return this.observers.has(listener);
   }
 
   /**
@@ -190,13 +215,13 @@ export class Context {
     eventType: ContextEventType,
     binding: Readonly<Binding<unknown>>,
   ) {
-    if (this.listeners.size === 0) return;
+    if (this.observers.size === 0) return;
     // Schedule the notification task into the event queue
     const task = () => {
       return new Promise((resolve, reject) => {
         // Run notifications in nextTick so that the binding is fully populated
         process.nextTick(async () => {
-          for (const listener of this.listeners) {
+          for (const listener of this.observers) {
             if (!listener.filter || listener.filter(binding)) {
               try {
                 await listener.listen(eventType, binding, this);

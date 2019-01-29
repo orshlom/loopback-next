@@ -38,11 +38,11 @@ class TestContext extends Context {
         resolve();
         return;
       }
-      this.eventQueue.once('end', err => {
+      this.once('observersNotified', err => {
         if (err) reject(err);
         else resolve();
       });
-      this.eventQueue.once('error', err => {
+      this.once('error', err => {
         reject(err);
       });
     });
