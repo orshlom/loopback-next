@@ -6,6 +6,7 @@
 import {Binding} from './binding';
 import {BindingFilter} from './binding-filter';
 import {ValueOrPromise} from './value-promise';
+import {Context} from './context';
 
 /**
  * Context event types. We support `bind` and `unbind` for now but
@@ -18,7 +19,8 @@ export type ContextEventType = 'bind' | 'unbind' | string;
  */
 export interface ContextEventListener {
   /**
-   * A filter function to match bindings
+   * An optional filter function to match bindings. If not present, the listener
+   * will be notified of all binding events.
    */
   filter?: BindingFilter;
 
@@ -30,6 +32,7 @@ export interface ContextEventListener {
   listen(
     eventType: ContextEventType,
     binding: Readonly<Binding<unknown>>,
+    context: Context,
   ): ValueOrPromise<void>;
 }
 

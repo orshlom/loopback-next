@@ -15,7 +15,7 @@ import {
 } from '../..';
 
 import {promisify} from 'util';
-const setImmediatePromise = promisify(setImmediate);
+const setImmediateAsync = promisify(setImmediate);
 
 /**
  * Create a subclass of context so that we can access parents and registry
@@ -30,7 +30,7 @@ class TestContext extends Context {
     return map;
   }
   /**
-   * Wait until the context event queue is empty
+   * Wait until the context event queue is empty or an error is thrown
    */
   waitUntilEventsProcessed() {
     return new Promise((resolve, reject) => {
@@ -38,11 +38,11 @@ class TestContext extends Context {
         resolve();
         return;
       }
-      this.eventQueue.on('end', err => {
+      this.eventQueue.once('end', err => {
         if (err) reject(err);
         else resolve();
       });
-      this.eventQueue.on('error', err => {
+      this.eventQueue.once('error', err => {
         reject(err);
       });
     });
@@ -759,11 +759,23 @@ describe('Context', () => {
 
     beforeEach(givenListeners);
 
-    it('emits bind event to matching listeners', async () => {
+    it('emits one bind event to matching listeners', async () => {
       ctx.bind('foo').to('foo-value');
       await ctx.waitUntilEventsProcessed();
       expect(events).to.eql(['1:foo:foo-value:bind', '2:foo:foo-value:bind']);
       expect(nonMatchingListenerCalled).to.be.false();
+    });
+
+    it('emits multiple bind events to matching listeners', async () => {
+      ctx.bind('foo').to('foo-value');
+      ctx.bind('xyz').to('xyz-value');
+      await ctx.waitUntilEventsProcessed();
+      expect(events).to.eql([
+        '1:foo:foo-value:bind',
+        '2:foo:foo-value:bind',
+        '1:xyz:xyz-value:bind',
+        '2:xyz:xyz-value:bind',
+      ]);
     });
 
     it('emits unbind event to matching listeners', async () => {
@@ -808,28 +820,27 @@ describe('Context', () => {
       };
       // A sync listener matches the criteria
       const matchingListener: ContextEventListener = {
-        filter: binding => true,
-        listen: (event, binding) => {
+        listen: (event, binding, context) => {
           // Make sure the binding is configured with value
           // when the listener is notified
-          const val = binding.getValue(ctx);
+          const val = binding.getValue(context);
           events.push(`1:${binding.key}:${val}:${event}`);
         },
       };
       // An async listener matches the criteria
       const matchingAsyncListener: ContextEventListener = {
         filter: binding => true,
-        listen: async (event, binding) => {
-          await setImmediatePromise();
-          const val = binding.getValue(ctx);
+        listen: async (event, binding, context) => {
+          await setImmediateAsync();
+          const val = binding.getValue(context);
           events.push(`2:${binding.key}:${val}:${event}`);
         },
       };
       // An async listener matches the criteria that throws an error
       const matchingAsyncListenerWithError: ContextEventListener = {
         filter: binding => binding.key === 'bar',
-        listen: async (event, binding) => {
-          await setImmediatePromise();
+        listen: async () => {
+          await setImmediateAsync();
           throw new Error('something wrong');
         },
       };

@@ -145,9 +145,8 @@ export class Context {
   }
 
   /**
-   * Add the context listener as an event listener to the context chain,
-   * including its ancestors
-   * @param listener Context listener
+   * Add a context event listener to the context chain, including its ancestors
+   * @param listener Context event listener
    */
   subscribe(listener: ContextEventListener): Subscription {
     let ctx: Context | undefined = this;
@@ -159,8 +158,8 @@ export class Context {
   }
 
   /**
-   * Remove the context listener  from the context chain
-   * @param listener Context listener
+   * Remove the context event listener from the context chain
+   * @param listener Context event listener
    */
   unsubscribe(listener: ContextEventListener) {
     let ctx: Context | undefined = this;
@@ -200,14 +199,9 @@ export class Context {
           for (const listener of this.listeners) {
             if (!listener.filter || listener.filter(binding)) {
               try {
-                await listener.listen(eventType, binding);
+                await listener.listen(eventType, binding, this);
               } catch (err) {
-                debug(
-                  'Error thrown by a listener is ignored',
-                  err,
-                  eventType,
-                  binding,
-                );
+                debug(err, eventType, binding);
                 reject(err);
                 return;
               }
