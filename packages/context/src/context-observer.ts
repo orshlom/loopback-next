@@ -15,9 +15,9 @@ import {Context} from './context';
 export type ContextEventType = 'bind' | 'unbind' | string;
 
 /**
- * Listeners of context bind/unbind events
+ * Observers of context bind/unbind events
  */
-export interface ContextEventListener {
+export interface ContextObserver {
   /**
    * An optional filter function to match bindings. If not present, the listener
    * will be notified of all binding events.
@@ -29,7 +29,7 @@ export interface ContextEventListener {
    * @param eventType Context event type
    * @param binding The binding as event source
    */
-  listen(
+  observe(
     eventType: ContextEventType,
     binding: Readonly<Binding<unknown>>,
     context: Context,

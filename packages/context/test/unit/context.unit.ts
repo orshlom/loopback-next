@@ -10,7 +10,7 @@ import {
   BindingScope,
   BindingType,
   Context,
-  ContextEventListener,
+  ContextObserver,
   isPromiseLike,
 } from '../..';
 
@@ -32,7 +32,7 @@ class TestContext extends Context {
   /**
    * Wait until the context event queue is empty or an error is thrown
    */
-  waitUntilEventsProcessed() {
+  waitUntilObserversNotified() {
     return new Promise((resolve, reject) => {
       if (this.eventQueue.length === 0) {
         resolve();
@@ -703,73 +703,73 @@ describe('Context', () => {
     });
   });
 
-  describe('listener subscription', () => {
-    let nonMatchingListener: ContextEventListener;
+  describe('observer subscription', () => {
+    let nonMatchingObserver: ContextObserver;
 
-    beforeEach(givenNonMatchingListener);
+    beforeEach(givenNonMatchingObserver);
 
-    it('subscribes listeners', () => {
-      ctx.subscribe(nonMatchingListener);
-      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
+    it('subscribes observers', () => {
+      ctx.subscribe(nonMatchingObserver);
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.true();
     });
 
-    it('unsubscribes listeners', () => {
-      ctx.subscribe(nonMatchingListener);
-      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
-      ctx.unsubscribe(nonMatchingListener);
-      expect(ctx.isSubscribed(nonMatchingListener)).to.false();
+    it('unsubscribes observers', () => {
+      ctx.subscribe(nonMatchingObserver);
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.true();
+      ctx.unsubscribe(nonMatchingObserver);
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.false();
     });
 
     it('allows subscription.unsubscribe()', () => {
-      const subscription = ctx.subscribe(nonMatchingListener);
-      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
+      const subscription = ctx.subscribe(nonMatchingObserver);
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.true();
       subscription.unsubscribe();
-      expect(ctx.isSubscribed(nonMatchingListener)).to.false();
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.false();
       expect(subscription.closed).to.be.true();
     });
 
-    it('registers listeners on context chain', () => {
+    it('registers observers on context chain', () => {
       const childCtx = new Context(ctx, 'child');
-      childCtx.subscribe(nonMatchingListener);
-      expect(childCtx.isSubscribed(nonMatchingListener)).to.true();
-      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
+      childCtx.subscribe(nonMatchingObserver);
+      expect(childCtx.isSubscribed(nonMatchingObserver)).to.true();
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.true();
     });
 
-    it('un-registers listeners on context chain', () => {
+    it('un-registers observers on context chain', () => {
       const childCtx = new Context(ctx, 'child');
-      childCtx.subscribe(nonMatchingListener);
-      expect(childCtx.isSubscribed(nonMatchingListener)).to.true();
-      expect(ctx.isSubscribed(nonMatchingListener)).to.true();
-      childCtx.unsubscribe(nonMatchingListener);
-      expect(childCtx.isSubscribed(nonMatchingListener)).to.false();
-      expect(ctx.isSubscribed(nonMatchingListener)).to.false();
+      childCtx.subscribe(nonMatchingObserver);
+      expect(childCtx.isSubscribed(nonMatchingObserver)).to.true();
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.true();
+      childCtx.unsubscribe(nonMatchingObserver);
+      expect(childCtx.isSubscribed(nonMatchingObserver)).to.false();
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.false();
     });
 
-    function givenNonMatchingListener() {
-      nonMatchingListener = {
+    function givenNonMatchingObserver() {
+      nonMatchingObserver = {
         filter: binding => false,
-        listen: (event, binding) => {},
+        observe: (event, binding) => {},
       };
     }
   });
 
   describe('event notification', () => {
     const events: string[] = [];
-    let nonMatchingListenerCalled = false;
+    let nonMatchingObserverCalled = false;
 
-    beforeEach(givenListeners);
+    beforeEach(givenObservers);
 
-    it('emits one bind event to matching listeners', async () => {
+    it('emits one bind event to matching observers', async () => {
       ctx.bind('foo').to('foo-value');
-      await ctx.waitUntilEventsProcessed();
+      await ctx.waitUntilObserversNotified();
       expect(events).to.eql(['1:foo:foo-value:bind', '2:foo:foo-value:bind']);
-      expect(nonMatchingListenerCalled).to.be.false();
+      expect(nonMatchingObserverCalled).to.be.false();
     });
 
-    it('emits multiple bind events to matching listeners', async () => {
+    it('emits multiple bind events to matching observers', async () => {
       ctx.bind('foo').to('foo-value');
       ctx.bind('xyz').to('xyz-value');
-      await ctx.waitUntilEventsProcessed();
+      await ctx.waitUntilObserversNotified();
       expect(events).to.eql([
         '1:foo:foo-value:bind',
         '2:foo:foo-value:bind',
@@ -778,76 +778,76 @@ describe('Context', () => {
       ]);
     });
 
-    it('emits unbind event to matching listeners', async () => {
+    it('emits unbind event to matching observers', async () => {
       ctx.bind('foo').to('foo-value');
-      await ctx.waitUntilEventsProcessed();
+      await ctx.waitUntilObserversNotified();
       ctx.unbind('foo');
-      await ctx.waitUntilEventsProcessed();
+      await ctx.waitUntilObserversNotified();
       expect(events).to.eql([
         '1:foo:foo-value:bind',
         '2:foo:foo-value:bind',
         '1:foo:foo-value:unbind',
         '2:foo:foo-value:unbind',
       ]);
-      expect(nonMatchingListenerCalled).to.be.false();
+      expect(nonMatchingObserverCalled).to.be.false();
     });
 
-    it('does not trigger listeners if affected binding is the same', async () => {
+    it('does not trigger observers if affected binding is the same', async () => {
       const binding = ctx.bind('foo').to('foo-value');
-      await ctx.waitUntilEventsProcessed();
+      await ctx.waitUntilObserversNotified();
       expect(events).to.eql(['1:foo:foo-value:bind', '2:foo:foo-value:bind']);
       ctx.add(binding);
-      await ctx.waitUntilEventsProcessed();
+      await ctx.waitUntilObserversNotified();
       expect(events).to.eql(['1:foo:foo-value:bind', '2:foo:foo-value:bind']);
     });
 
-    it('reports error if a listener fails', () => {
+    it('reports error if an observer fails', () => {
       ctx.bind('bar').to('bar-value');
-      return expect(ctx.waitUntilEventsProcessed()).to.be.rejectedWith(
+      return expect(ctx.waitUntilObserversNotified()).to.be.rejectedWith(
         'something wrong',
       );
     });
 
-    function givenListeners() {
-      nonMatchingListenerCalled = false;
+    function givenObservers() {
+      nonMatchingObserverCalled = false;
       events.splice(0, events.length);
-      // A listener does not match the criteria
-      const nonMatchingListener: ContextEventListener = {
+      // An observer does not match the criteria
+      const nonMatchingObserver: ContextObserver = {
         filter: binding => false,
-        listen: (event, binding) => {
-          nonMatchingListenerCalled = true;
+        observe: (event, binding) => {
+          nonMatchingObserverCalled = true;
         },
       };
-      // A sync listener matches the criteria
-      const matchingListener: ContextEventListener = {
-        listen: (event, binding, context) => {
+      // A sync observer matches the criteria
+      const matchingObserver: ContextObserver = {
+        observe: (event, binding, context) => {
           // Make sure the binding is configured with value
-          // when the listener is notified
+          // when the observer is notified
           const val = binding.getValue(context);
           events.push(`1:${binding.key}:${val}:${event}`);
         },
       };
-      // An async listener matches the criteria
-      const matchingAsyncListener: ContextEventListener = {
+      // An async observer matches the criteria
+      const matchingAsyncObserver: ContextObserver = {
         filter: binding => true,
-        listen: async (event, binding, context) => {
+        observe: async (event, binding, context) => {
           await setImmediateAsync();
           const val = binding.getValue(context);
           events.push(`2:${binding.key}:${val}:${event}`);
         },
       };
-      // An async listener matches the criteria that throws an error
-      const matchingAsyncListenerWithError: ContextEventListener = {
+      // An async observer matches the criteria that throws an error
+      const matchingAsyncObserverWithError: ContextObserver = {
         filter: binding => binding.key === 'bar',
-        listen: async () => {
+        observe: async () => {
           await setImmediateAsync();
           throw new Error('something wrong');
         },
       };
-      ctx.subscribe(nonMatchingListener);
-      ctx.subscribe(matchingListener);
-      ctx.subscribe(matchingAsyncListener);
-      ctx.subscribe(matchingAsyncListenerWithError);
+      ctx.subscribe(nonMatchingObserver);
+      ctx.subscribe(matchingObserver);
+      ctx.subscribe(matchingAsyncObserver);
+      ctx.subscribe(matchingAsyncObserverWithError);
     }
   });
 

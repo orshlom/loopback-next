@@ -12,10 +12,10 @@ import {Binding, BindingTag} from './binding';
 import {BindingFilter, filterByKey, filterByTag} from './binding-filter';
 import {BindingAddress, BindingKey} from './binding-key';
 import {
-  ContextEventListener,
+  ContextObserver,
   ContextEventType,
   Subscription,
-} from './context-listener';
+} from './context-observer';
 import {ResolutionOptions, ResolutionSession} from './resolution-session';
 import {BoundValue, getDeepProperty, isPromiseLike} from './value-promise';
 
@@ -41,9 +41,9 @@ export class Context extends EventEmitter {
   protected _parent?: Context;
 
   /**
-   * A list of registered context listeners
+   * A list of registered context observers
    */
-  protected readonly observers: Set<ContextEventListener> = new Set();
+  protected readonly observers: Set<ContextObserver> = new Set();
 
   /**
    * Queue for context event notifications
@@ -88,10 +88,12 @@ export class Context extends EventEmitter {
    */
   private setupEventHandlers() {
     for (const event of ['bind', 'unbind']) {
+      // Listen on events and notify observers
       this.on(event, (binding: Readonly<Binding<unknown>>) => {
-        this.notifyListeners(event, binding);
+        this.notifyObservers(event, binding);
       });
     }
+    // Relay events from the event queue
     this.eventQueue.on('error', err => {
       this.emit('error', err);
     });
@@ -170,48 +172,48 @@ export class Context extends EventEmitter {
   }
 
   /**
-   * Add a context event listener to the context chain, including its ancestors
-   * @param listener Context event listener
+   * Add a context event observer to the context chain, including its ancestors
+   * @param observer Context event observer
    */
-  subscribe(listener: ContextEventListener): Subscription {
+  subscribe(observer: ContextObserver): Subscription {
     let ctx: Context | undefined = this;
     while (ctx != null) {
-      ctx.observers.add(listener);
+      ctx.observers.add(observer);
       ctx = ctx._parent;
     }
-    return new ContextSubscription(this, listener);
+    return new ContextSubscription(this, observer);
   }
 
   /**
-   * Remove the context event listener from the context chain
-   * @param listener Context event listener
+   * Remove the context event observer from the context chain
+   * @param observer Context event observer
    */
-  unsubscribe(listener: ContextEventListener) {
+  unsubscribe(observer: ContextObserver) {
     let ctx: Context | undefined = this;
     while (ctx != null) {
-      ctx.observers.delete(listener);
+      ctx.observers.delete(observer);
       ctx = ctx._parent;
     }
   }
 
   /**
-   * Check if a listener is subscribed to this context
-   * @param listener Context listener
+   * Check if an observer is subscribed to this context
+   * @param observer Context observer
    */
-  isSubscribed(listener: ContextEventListener) {
-    return this.observers.has(listener);
+  isSubscribed(observer: ContextObserver) {
+    return this.observers.has(observer);
   }
 
   /**
-   * Publish an event to the registered listeners. Please note the
+   * Publish an event to the registered observers. Please note the
    * notification is queued and performed asynchronously so that we allow fluent
-   * APIs such as `ctx.bind('key').to(...).tag(...);` and give listeners the
+   * APIs such as `ctx.bind('key').to(...).tag(...);` and give observers the
    * fully populated binding.
    *
    * @param eventType Event names: `bind` or `unbind`
    * @param binding Binding bound or unbound
    */
-  protected notifyListeners(
+  protected notifyObservers(
     eventType: ContextEventType,
     binding: Readonly<Binding<unknown>>,
   ) {
@@ -221,10 +223,10 @@ export class Context extends EventEmitter {
       return new Promise((resolve, reject) => {
         // Run notifications in nextTick so that the binding is fully populated
         process.nextTick(async () => {
-          for (const listener of this.observers) {
-            if (!listener.filter || listener.filter(binding)) {
+          for (const observer of this.observers) {
+            if (!observer.filter || observer.filter(binding)) {
               try {
-                await listener.listen(eventType, binding, this);
+                await observer.observe(eventType, binding, this);
               } catch (err) {
                 debug(err, eventType, binding);
                 reject(err);
@@ -595,13 +597,13 @@ export class Context extends EventEmitter {
 class ContextSubscription implements Subscription {
   constructor(
     protected context: Context,
-    protected listener: ContextEventListener,
+    protected observer: ContextObserver,
   ) {}
 
   private _closed = false;
 
   unsubscribe() {
-    this.context.unsubscribe(this.listener);
+    this.context.unsubscribe(this.observer);
     this._closed = true;
   }
 
