@@ -5,19 +5,21 @@
 
 import * as debugModule from 'debug';
 import {EventEmitter} from 'events';
-import Queue from 'queue';
 import {v1 as uuidv1} from 'uuid';
 import {ValueOrPromise} from '.';
 import {Binding, BindingTag} from './binding';
 import {BindingFilter, filterByKey, filterByTag} from './binding-filter';
 import {BindingAddress, BindingKey} from './binding-key';
 import {
-  ContextObserver,
   ContextEventType,
+  ContextObserver,
   Subscription,
 } from './context-observer';
 import {ResolutionOptions, ResolutionSession} from './resolution-session';
 import {BoundValue, getDeepProperty, isPromiseLike} from './value-promise';
+
+// FIXME: `@types/p-event` is out of date against `p-event@2.2.0`
+const pEvent = require('p-event');
 
 const debug = debugModule('loopback:context');
 
@@ -46,9 +48,9 @@ export class Context extends EventEmitter {
   protected readonly observers: Set<ContextObserver> = new Set();
 
   /**
-   * Queue for context event notifications
+   * Internal counter for pending events which observers have not processed yet
    */
-  protected readonly eventQueue = new Queue({concurrency: 1, autostart: true});
+  private pendingEvents = 0;
 
   /**
    * Create a new context. For example,
@@ -87,22 +89,44 @@ export class Context extends EventEmitter {
    * upon `bind` and `unbind` events
    */
   private setupEventHandlers() {
-    for (const event of ['bind', 'unbind']) {
-      // Listen on events and notify observers
-      this.on(event, (binding: Readonly<Binding<unknown>>) => {
-        this.notifyObservers(event, binding);
-      });
-    }
-    // Relay events from the event queue
-    this.eventQueue.on('error', err => {
-      this.emit('error', err);
+    // Ideally p-event should allow multiple event types in an iterator
+    this.observeEvent('bind');
+    this.observeEvent('unbind');
+  }
+
+  /**
+   * Listen on context events and notify observers
+   * @param eventType Context event type
+   */
+  private async observeEvent(eventType: ContextEventType) {
+    this.on(eventType, () => {
+      // Track pending events
+      this.pendingEvents++;
     });
-    this.eventQueue.on('end', err => {
-      if (err) this.emit('error', err);
-      else {
-        this.emit('observersNotified');
+    // Create an async iterator from the given event type
+    const bindings: AsyncIterable<Readonly<Binding<unknown>>> = pEvent.iterator(
+      this,
+      eventType,
+    );
+    for await (const binding of bindings) {
+      try {
+        await this.notifyObservers(eventType, binding);
+        this.pendingEvents--;
+        this.emit('idle');
+      } catch (err) {
+        this.pendingEvents--;
+        this.emit('error', err);
       }
-    });
+    }
+  }
+
+  /**
+   * Wait until event notification is idle
+   */
+  protected async waitForIdle() {
+    const count = this.pendingEvents;
+    if (count === 0) return;
+    await pEvent.multiple(this, 'idle', {count});
   }
 
   /**
@@ -213,32 +237,17 @@ export class Context extends EventEmitter {
    * @param eventType Event names: `bind` or `unbind`
    * @param binding Binding bound or unbound
    */
-  protected notifyObservers(
+  protected async notifyObservers(
     eventType: ContextEventType,
     binding: Readonly<Binding<unknown>>,
   ) {
     if (this.observers.size === 0) return;
-    // Schedule the notification task into the event queue
-    const task = () => {
-      return new Promise((resolve, reject) => {
-        // Run notifications in nextTick so that the binding is fully populated
-        process.nextTick(async () => {
-          for (const observer of this.observers) {
-            if (!observer.filter || observer.filter(binding)) {
-              try {
-                await observer.observe(eventType, binding, this);
-              } catch (err) {
-                debug(err, eventType, binding);
-                reject(err);
-                return;
-              }
-            }
-          }
-          resolve();
-        });
-      });
-    };
-    this.eventQueue.push(task);
+
+    for (const observer of this.observers) {
+      if (!observer.filter || observer.filter(binding)) {
+        await observer.observe(eventType, binding, this);
+      }
+    }
   }
 
   /**

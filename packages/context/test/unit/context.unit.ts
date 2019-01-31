@@ -4,17 +4,19 @@
 // License text available at https://opensource.org/licenses/MIT
 
 import {expect} from '@loopback/testlab';
+import {promisify} from 'util';
 import {
   Binding,
   BindingKey,
   BindingScope,
   BindingType,
   Context,
+  ContextEventType,
   ContextObserver,
+  filterByTag,
   isPromiseLike,
 } from '../..';
 
-import {promisify} from 'util';
 const setImmediateAsync = promisify(setImmediate);
 
 /**
@@ -29,23 +31,12 @@ class TestContext extends Context {
     const map = new Map(this.registry);
     return map;
   }
+
   /**
    * Wait until the context event queue is empty or an error is thrown
    */
-  waitUntilObserversNotified() {
-    return new Promise((resolve, reject) => {
-      if (this.eventQueue.length === 0) {
-        resolve();
-        return;
-      }
-      this.once('observersNotified', err => {
-        if (err) reject(err);
-        else resolve();
-      });
-      this.once('error', err => {
-        reject(err);
-      });
-    });
+  waitUntilObserversNotified(): Promise<void> {
+    return this.waitForIdle();
   }
 }
 
@@ -848,6 +839,74 @@ describe('Context', () => {
       ctx.subscribe(matchingObserver);
       ctx.subscribe(matchingAsyncObserver);
       ctx.subscribe(matchingAsyncObserverWithError);
+    }
+  });
+
+  describe('event notification for context chain', () => {
+    let app: Context;
+    let server: Context;
+
+    let contextListener: MyObserverForControllers;
+    beforeEach(givenControllerListener);
+
+    it('receives notifications of matching binding events', async () => {
+      const controllers = await getControllers();
+      // We have server: 1, app: 2
+      // NOTE: The controllers are not guaranteed to be ['1', '2'] as the events
+      // are emitted by two context objects and they are processed asynchronously
+      expect(controllers).to.containEql('1');
+      expect(controllers).to.containEql('2');
+      server.unbind('controllers.1');
+      // Now we have app: 2
+      expect(await getControllers()).to.eql(['2']);
+      app.unbind('controllers.2');
+      // All controllers are gone from the context chain
+      expect(await getControllers()).to.eql([]);
+      // Add a new controller - server: 3
+      givenController(server, '3');
+      expect(await getControllers()).to.eql(['3']);
+    });
+
+    class MyObserverForControllers implements ContextObserver {
+      controllers: Set<string> = new Set();
+      filter = filterByTag('controller');
+      observe(event: ContextEventType, binding: Readonly<Binding<unknown>>) {
+        if (event === 'bind') {
+          this.controllers.add(binding.tagMap.name);
+        } else if (event === 'unbind') {
+          this.controllers.delete(binding.tagMap.name);
+        }
+      }
+    }
+
+    function givenControllerListener() {
+      givenServerWithinAnApp();
+      contextListener = new MyObserverForControllers();
+      server.subscribe(contextListener);
+      givenController(server, '1');
+      givenController(app, '2');
+    }
+
+    function givenController(context: Context, controllerName: string) {
+      class MyController {
+        name = controllerName;
+      }
+      context
+        .bind(`controllers.${controllerName}`)
+        .toClass(MyController)
+        .tag('controller', {name: controllerName});
+    }
+
+    async function getControllers() {
+      return new Promise<string[]>(resolve => {
+        // Wrap it inside `setImmediate` to make the events are triggered
+        setImmediate(() => resolve(Array.from(contextListener.controllers)));
+      });
+    }
+
+    function givenServerWithinAnApp() {
+      app = new Context('app');
+      server = new Context(app, 'server');
     }
   });
 
