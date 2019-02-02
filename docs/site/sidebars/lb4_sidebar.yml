@@ -21,7 +21,7 @@ children:
   children:
 
   - title: 'Tutorials'
-    url: Examples-and-tutorials.html
+    url: Tutorials.html
     output: 'web, pdf'
     children:
 
