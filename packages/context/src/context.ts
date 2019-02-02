@@ -94,6 +94,24 @@ export class Context extends EventEmitter {
   }
 
   /**
+   * Wrap the debug statement so that it always print out the context name
+   * as the prefix
+   * @param formatter
+   * @param args
+   */
+  // tslint:disable-next-line:no-any
+  private _debug(formatter: any, ...args: any[]) {
+    /* istanbul ignore if */
+    if (debug.enabled) {
+      if (typeof formatter === 'string') {
+        debug(`[%s] ${formatter}`, this.name, ...args);
+      } else {
+        debug('[%s] ', this.name, formatter, ...args);
+      }
+    }
+  }
+
+  /**
    * Set up an internal listener to notify registered observers asynchronously
    * upon `bind` and `unbind` events
    */
@@ -117,27 +135,34 @@ export class Context extends EventEmitter {
    * @param eventType Context event type
    */
   private async startNotificationTask(eventType: ContextEventType) {
-    let currentObservers = this.observers;
-    this.on(eventType, () => {
+    const notificationEvent = `${eventType}-notification`;
+    this.on(eventType, binding => {
+      // No need to schedule notifications if no observers are present
+      if (this.observers.size === 0) return;
       // Track pending events
       this.pendingEvents++;
       // Take a snapshot of current observers to ensure notifications of this
-      // event will only be sent to current ones
-      currentObservers = new Set(this.observers);
+      // event will only be sent to current ones. Emit a new event to notify
+      // current context observers.
+      this.emit(notificationEvent, {
+        binding,
+        observers: new Set(this.observers),
+      });
     });
     // FIXME(rfeng): p-event should allow multiple event types in an iterator.
     // Create an async iterator from the given event type
-    const bindings: AsyncIterable<Readonly<Binding<unknown>>> = pEvent.iterator(
-      this,
-      eventType,
-    );
-    for await (const binding of bindings) {
+    const events: AsyncIterable<{
+      binding: Readonly<Binding<unknown>>;
+      observers: Set<ContextObserver>;
+    }> = pEvent.iterator(this, notificationEvent);
+    for await (const event of events) {
       // The loop will happen asynchronously upon events
       try {
         // The execution of observers happen in the Promise micro-task queue
-        await this.notifyObservers(eventType, binding, currentObservers);
+        const binding = event.binding;
+        await this.notifyObservers(eventType, binding, event.observers);
         this.pendingEvents--;
-        debug(
+        this._debug(
           'Observers notified for %s of binding %s',
           eventType,
           binding.key,
@@ -145,7 +170,7 @@ export class Context extends EventEmitter {
         this.emit('observersNotified', {eventType, binding});
       } catch (err) {
         this.pendingEvents--;
-        debug('Error caught from observers', err);
+        this._debug('Error caught from observers', err);
         // Errors caught from observers. Emit it to the current context.
         // If no error listeners are registered, crash the process.
         this.emit('error', err);
@@ -186,11 +211,7 @@ export class Context extends EventEmitter {
    */
   add(binding: Binding<unknown>): this {
     const key = binding.key;
-    /* istanbul ignore if */
-    if (debug.enabled) {
-      debug('Adding binding: %s', key);
-    }
-
+    this._debug('[%s] Adding binding: %s', key);
     let existingBinding: Binding | undefined;
     const keyExists = this.registry.has(key);
     if (keyExists) {
@@ -220,6 +241,7 @@ export class Context extends EventEmitter {
    * @returns true if the binding key is found and removed from this context
    */
   unbind(key: BindingAddress): boolean {
+    this._debug('Unbind %s', key);
     key = BindingKey.validate(key);
     const binding = this.registry.get(key);
     // If not found, return `false`
@@ -265,6 +287,7 @@ export class Context extends EventEmitter {
    * which is created per request.
    */
   close() {
+    this._debug('Closing context...');
     for (const observer of this.observers) {
       this.unsubscribe(observer);
     }
@@ -455,10 +478,7 @@ export class Context extends EventEmitter {
     keyWithPath: BindingAddress<ValueType>,
     optionsOrSession?: ResolutionOptions | ResolutionSession,
   ): Promise<ValueType | undefined> {
-    /* istanbul ignore if */
-    if (debug.enabled) {
-      debug('Resolving binding: %s', keyWithPath);
-    }
+    this._debug('Resolving binding: %s', keyWithPath);
     return await this.getValueOrPromise<ValueType | undefined>(
       keyWithPath,
       optionsOrSession,
@@ -525,10 +545,8 @@ export class Context extends EventEmitter {
     keyWithPath: BindingAddress<ValueType>,
     optionsOrSession?: ResolutionOptions | ResolutionSession,
   ): ValueType | undefined {
-    /* istanbul ignore if */
-    if (debug.enabled) {
-      debug('Resolving binding synchronously: %s', keyWithPath);
-    }
+    this._debug('Resolving binding synchronously: %s', keyWithPath);
+
     const valueOrPromise = this.getValueOrPromise<ValueType>(
       keyWithPath,
       optionsOrSession,
