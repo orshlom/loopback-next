@@ -74,6 +74,14 @@ describe('Context', () => {
       expect(ctx.isSubscribed(nonMatchingObserver)).to.false();
     });
 
+    it('un-registers observers on context chain during close', () => {
+      const childCtx = new Context(ctx, 'child');
+      childCtx.subscribe(nonMatchingObserver);
+      childCtx.close();
+      expect(childCtx.isSubscribed(nonMatchingObserver)).to.false();
+      expect(ctx.isSubscribed(nonMatchingObserver)).to.false();
+    });
+
     function givenNonMatchingObserver() {
       nonMatchingObserver = {
         filter: binding => false,

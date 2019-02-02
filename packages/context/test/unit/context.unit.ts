@@ -640,6 +640,22 @@ describe('Context', () => {
     });
   });
 
+  describe('close()', () => {
+    it('clears all bindings', () => {
+      ctx.bind('foo').to('foo-value');
+      expect(ctx.bindingMap.size).to.eql(1);
+      ctx.close();
+      expect(ctx.bindingMap.size).to.eql(0);
+    });
+
+    it('dereferences parent', () => {
+      const childCtx = new TestContext(ctx);
+      expect(childCtx.parent).to.equal(ctx);
+      childCtx.close();
+      expect(childCtx.parent).to.be.undefined();
+    });
+  });
+
   describe('toJSON()', () => {
     it('converts to plain JSON object', () => {
       ctx

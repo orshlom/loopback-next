@@ -257,6 +257,22 @@ export class Context extends EventEmitter {
   }
 
   /**
+   * Close the context and release references to other objects in the context
+   * chain.
+   *
+   * This method MUST be called to avoid memory leaks once a context object is
+   * no longer needed and should be GCed. An example is the `RequestContext`,
+   * which is created per request.
+   */
+  close() {
+    for (const observer of this.observers) {
+      this.unsubscribe(observer);
+    }
+    this.registry.clear();
+    this._parent = undefined;
+  }
+
+  /**
    * Check if an observer is subscribed to this context
    * @param observer Context observer
    */
